@@ -750,6 +750,8 @@ func (a *SUBController) serveJsonBody(c *gin.Context, alwaysReturnArray bool, co
 		return subReq
 	}, subId, profileURL)
 	a.ApplyCommonHeaders(c, header, a.updateInterval, metadata.Title, metadata.SupportURL, metadata.ProfileURL, metadata.Announce, a.subEnableRouting, a.subRoutingRules, a.subHideSettings)
+	c.Writer.Header().Set("Routing-Enable", "0")
+	c.Writer.Header().Del("Routing")
 	if rawDownload {
 		c.Writer.Header().Set("Content-Disposition", `attachment; filename="subscription.json"`)
 	}
