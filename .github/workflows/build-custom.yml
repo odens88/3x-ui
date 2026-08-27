@@ -34,9 +34,6 @@ jobs:
             goarch: amd64
             bootlin_arch: x86-64
 
-          - platform: arm64
-            goarch: arm64
-            bootlin_arch: aarch64
 
     steps:
       - name: Checkout repository
