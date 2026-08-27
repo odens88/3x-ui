@@ -193,8 +193,6 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             dist/x-ui-custom-linux-amd64 \
             dist/x-ui-custom-linux-amd64.sha256 \
-            dist/x-ui-custom-linux-arm64 \
-            dist/x-ui-custom-linux-arm64.sha256 \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes
