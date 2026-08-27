@@ -1,0 +1,203 @@
+name: Build Custom 3X-UI
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - custom
+
+    tags:
+      - "custom-v*"
+
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - "frontend/**"
+      - "internal/sub/**"
+      - ".github/workflows/build-custom.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Linux ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: amd64
+            goarch: amd64
+            bootlin_arch: x86-64
+
+          - platform: arm64
+            goarch: arm64
+            bootlin_arch: aarch64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Show build versions
+        run: |
+          go version
+          node --version
+          npm --version
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl xz-utils file
+
+      - name: Install musl cross-toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BOOTLIN_ARCH="${{ matrix.bootlin_arch }}"
+          TARBALL_BASE="https://toolchains.bootlin.com/downloads/releases/toolchains/${BOOTLIN_ARCH}/tarballs/"
+
+          echo "Looking for Bootlin musl toolchain for ${BOOTLIN_ARCH}"
+
+          TARBALL_NAME="$(
+            curl -fsSL "${TARBALL_BASE}" \
+              | grep -oE "${BOOTLIN_ARCH}--musl--stable-[^\"]+\.tar\.xz" \
+              | sort -V \
+              | tail -n1
+          )"
+
+          if [ -z "${TARBALL_NAME}" ]; then
+            echo "Unable to find Bootlin toolchain"
+            exit 1
+          fi
+
+          echo "Downloading ${TARBALL_NAME}"
+
+          curl -fL \
+            "${TARBALL_BASE}${TARBALL_NAME}" \
+            -o "/tmp/${TARBALL_NAME}"
+
+          cd /tmp
+          tar -xf "${TARBALL_NAME}"
+
+          TOOLCHAIN_DIR="$(
+            find /tmp \
+              -maxdepth 1 \
+              -type d \
+              -name "${BOOTLIN_ARCH}--musl--stable-*" \
+              | head -n1
+          )"
+
+          CC_PATH="$(
+            find "${TOOLCHAIN_DIR}/bin" \
+              -type f \
+              -name '*-gcc.br_real' \
+              -executable \
+              | head -n1
+          )"
+
+          if [ -z "${CC_PATH}" ]; then
+            echo "C compiler not found"
+            exit 1
+          fi
+
+          echo "TOOLCHAIN_DIR=${TOOLCHAIN_DIR}" >> "$GITHUB_ENV"
+          echo "CC_PATH=${CC_PATH}" >> "$GITHUB_ENV"
+
+      - name: Build static x-ui
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          export PATH="${TOOLCHAIN_DIR}/bin:${PATH}"
+          export CC="${CC_PATH}"
+
+          export CGO_ENABLED=1
+          export GOOS=linux
+          export GOARCH="${{ matrix.goarch }}"
+
+          OUTPUT="x-ui-custom-linux-${{ matrix.platform }}"
+
+          go build \
+            -ldflags="-w -s -linkmode external -extldflags '-static'" \
+            -o "${OUTPUT}" \
+            main.go
+
+          chmod 755 "${OUTPUT}"
+
+          file "${OUTPUT}"
+
+          ldd "${OUTPUT}" || true
+
+          "./${OUTPUT}" -v
+
+          sha256sum "${OUTPUT}" > "${OUTPUT}.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: x-ui-custom-linux-${{ matrix.platform }}
+          path: |
+            x-ui-custom-linux-${{ matrix.platform }}
+            x-ui-custom-linux-${{ matrix.platform }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/custom-v')
+    needs:
+      - build
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download builds
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show release files
+        run: |
+          find dist -maxdepth 1 -type f -print
+          sha256sum dist/x-ui-custom-linux-* \
+            | grep -v '\.sha256$' || true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/x-ui-custom-linux-amd64 \
+            dist/x-ui-custom-linux-amd64.sha256 \
+            dist/x-ui-custom-linux-arm64 \
+            dist/x-ui-custom-linux-arm64.sha256 \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes
